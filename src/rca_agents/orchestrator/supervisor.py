@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+
 from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
@@ -12,7 +13,6 @@ from ..agents.metrics_agent import default_question as default_metrics_question
 from ..agents import report_agent
 from ..core.result import AgentResult
 from ..config.settings import Settings, get_settings
-import json
 
 def _run_agent_module(module: str, cli_args: list[str], timeout: int = 600) -> str:
     result = subprocess.run(
@@ -114,15 +114,12 @@ def run_supervisor_flow(
         or "Perform a comprehensive Root Cause Analysis using both log and metrics perspectives."
     )
 
-    # Run log and metrics agents
     log_output = run_log_agent_isolated(resolved_log_query, settings=settings)
     metrics_output = run_metrics_agent_isolated(resolved_metrics_query, settings=settings)
 
-    # Parse agent results
     try:
         log_result = AgentResult(**eval(log_output.replace("AgentResult(", "dict(").replace(")", ")")))
     except:
-        # Fallback if parsing fails
         log_result = AgentResult(
             agent_name="log_agent",
             summary=log_output,
@@ -144,7 +141,6 @@ def run_supervisor_flow(
             needs_collaboration=False
         )
 
-    # Generate synthesis
     synthesis = synthesize_findings(
         log_result.summary,
         metrics_result.summary,
@@ -152,7 +148,6 @@ def run_supervisor_flow(
         settings=settings,
     )
 
-    # Generate PDF report if requested
     if generate_report:
         try:
             report_path = report_agent.run(
