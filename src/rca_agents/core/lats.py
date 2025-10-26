@@ -222,7 +222,14 @@ def build_agent_graph(spec: LATSAgentSpec):
     """Compile a LangGraph state machine for a LATS agent."""
     tool_node = ToolNode(tools=list(spec.tools))
     parser = JsonOutputToolsParser(return_id=True)
-    reflection_chain = _build_reflection_chain(spec)
+    # reflection_chain = _build_reflection_chain(spec)
+
+    def make_disabled_reflection(candidate: List[BaseMessage]) -> Reflection:
+        return Reflection(
+            reflections="Reflection disabled for ablation study.",
+            score=5,
+            found_solution=False,
+        )
 
     initial_answer_chain = spec.initial_prompt | spec.llm.bind_tools(
         tools=list(spec.tools)
@@ -256,9 +263,10 @@ def build_agent_graph(spec: LATSAgentSpec):
         output_messages: List[BaseMessage] = [res]
         for response in tool_responses:
             output_messages.append(response["messages"][0])
-        reflection = reflection_chain.invoke(
-            {"input": state["input"], "candidate": output_messages}
-        )
+        reflection = make_disabled_reflection(output_messages)
+        # reflection = reflection_chain.invoke(
+        #     {"input": state["input"], "candidate": output_messages}
+        # )
         root = Node(output_messages, reflection=reflection)
         return {"root": root, "input": state["input"]}
 
@@ -324,22 +332,25 @@ def build_agent_graph(spec: LATSAgentSpec):
         for index, candidate in enumerate(new_candidates):
             candidate_messages.append([candidate] + collected_responses[index])
 
-        reflections = []
-        for messages in candidate_messages:
-            try:
-                reflection = reflection_chain.invoke(
-                    {"input": state["input"], "candidate": messages},
-                    config,
-                )
-                reflections.append(reflection)
-            except (ValidationError, IndexError, Exception) as exc:
-                reflections.append(
-                    Reflection(
-                        reflections=f"Reflection failed: {type(exc).__name__}",
-                        score=3,
-                        found_solution=False,
-                    )
-                )
+        reflections = [
+            make_disabled_reflection(messages) for messages in candidate_messages
+        ]
+        # reflections = []
+        # for messages in candidate_messages:
+        #     try:
+        #         reflection = reflection_chain.invoke(
+        #             {"input": state["input"], "candidate": messages},
+        #             config,
+        #         )
+        #         reflections.append(reflection)
+        #     except (ValidationError, IndexError, Exception) as exc:
+        #         reflections.append(
+        #             Reflection(
+        #                 reflections=f"Reflection failed: {type(exc).__name__}",
+        #                 score=3,
+        #                 found_solution=False,
+        #             )
+        #         )
 
         children = [
             Node(messages, parent=best_candidate, reflection=reflection)
