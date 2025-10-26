@@ -133,11 +133,13 @@ class Node:
         return average_reward + exploration_weight * exploration_term
 
     def backpropagate(self, reward: float) -> None:
-        node: Optional["Node"] = self
-        while node:
-            node.visits += 1
-            node.value = (node.value * (node.visits - 1) + reward) / node.visits
-            node = node.parent
+        self.visits += 1
+        self.value = (self.value * (self.visits - 1) + reward) / self.visits
+        # node: Optional["Node"] = self
+        # while node:
+        #     node.visits += 1
+        #     node.value = (node.value * (node.visits - 1) + reward) / node.visits
+        #     node = node.parent
 
     def get_messages(self, include_reflection: bool = True) -> List[BaseMessage]:
         if include_reflection:
