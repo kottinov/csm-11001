@@ -263,21 +263,29 @@ def build_agent_graph(spec: LATSAgentSpec):
         return {"root": root, "input": state["input"]}
 
     def generate_candidates(messages: ChatPromptValue, config: RunnableConfig):
-        batch_size = config.get("configurable", {}).get(
-            "N", spec.candidate_batch_size
-        )
         bound_llm = spec.llm.bind_tools(tools=list(spec.tools))
-        candidates = []
-        for index in range(batch_size):
-            response = bound_llm.invoke(
-                messages.to_messages(),
-                config={
-                    "callbacks": config.get("callbacks"),
-                    "run_name": f"{spec.name}.Candidate_{index}",
-                },
-            )
-            candidates.append(response)
-        return candidates
+        response = bound_llm.invoke(
+            messages.to_messages(),
+            config={
+                "callbacks": config.get("callbacks"),
+                "run_name": f"{spec.name}.Candidate",
+            },
+        )
+        # batch_size = config.get("configurable", {}).get(
+        #     "N", spec.candidate_batch_size
+        # )
+        # candidates = []
+        # for index in range(batch_size):
+        #     response = bound_llm.invoke(
+        #         messages.to_messages(),
+        #         config={
+        #             "callbacks": config.get("callbacks"),
+        #             "run_name": f"{spec.name}.Candidate_{index}",
+        #         },
+        #     )
+        #     candidates.append(response)
+        # return candidates
+        return [response]
 
     expansion_chain = spec.initial_prompt | generate_candidates
 
