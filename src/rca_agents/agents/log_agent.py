@@ -80,6 +80,10 @@ def build_graph(settings: Optional[Settings] = None):
         reflection_prompt=_build_reflection_prompt(),
         max_height=settings.runtime.log_agent_max_depth,
         candidate_batch_size=settings.runtime.candidate_batch_size,
+        max_iterations=settings.runtime.log_agent_max_iterations,
+        temperature=settings.runtime.search_temperature,
+        exploration_weight=settings.runtime.exploration_weight,
+        self_consistency_weight=settings.runtime.self_consistency_weight,
     )
     return build_agent_graph(spec)
 

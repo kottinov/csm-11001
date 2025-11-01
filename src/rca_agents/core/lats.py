@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
+import json
 from typing import Iterable, List, Optional, Sequence, TypedDict
 
 from langchain_anthropic import ChatAnthropic
@@ -90,6 +91,9 @@ class Node:
         messages: List[BaseMessage],
         reflection: Reflection,
         parent: Optional["Node"] = None,
+        *,
+        action_signature: Optional[str] = None,
+        reward_override: Optional[float] = None,
     ):
         self.messages = messages
         self.parent = parent
@@ -98,10 +102,12 @@ class Node:
         self.visits = 0
         self.reflection = reflection
         self.depth = parent.depth + 1 if parent else 1
+        self.action_signature = action_signature
         self._is_solved = bool(reflection and reflection.found_solution)
         if self._is_solved:
             self._mark_tree_as_solved()
-        self.backpropagate(reflection.normalized_score)
+        self._last_reward = reward_override if reward_override is not None else reflection.normalized_score
+        self.backpropagate(self._last_reward)
 
     def __repr__(self) -> str:
         return (
@@ -177,6 +183,7 @@ class Node:
 class TreeState(TypedDict):
     root: Node
     input: str
+    iterations: int
 
 
 @dataclass(frozen=True)
@@ -187,7 +194,11 @@ class LATSAgentSpec:
     initial_prompt: ChatPromptTemplate
     reflection_prompt: ChatPromptTemplate
     max_height: int
+    max_iterations: int = 50
     candidate_batch_size: int = 5
+    temperature: float = 0.0
+    exploration_weight: float = 1.0
+    self_consistency_weight: float = 0.5
 
 
 def _build_reflection_chain(spec: LATSAgentSpec):
@@ -225,7 +236,8 @@ def build_agent_graph(spec: LATSAgentSpec):
     reflection_chain = _build_reflection_chain(spec)
 
     initial_answer_chain = spec.initial_prompt | spec.llm.bind_tools(
-        tools=list(spec.tools)
+        tools=list(spec.tools),
+        temperature=spec.temperature,
     ).with_config(run_name=f"{spec.name}.InitialCandidate")
 
     def generate_initial_response(state: TreeState) -> TreeState:
@@ -256,17 +268,32 @@ def build_agent_graph(spec: LATSAgentSpec):
         output_messages: List[BaseMessage] = [res]
         for response in tool_responses:
             output_messages.append(response["messages"][0])
+
+        action_signature = _extract_action_signature(res)
+
         reflection = reflection_chain.invoke(
             {"input": state["input"], "candidate": output_messages}
         )
-        root = Node(output_messages, reflection=reflection)
-        return {"root": root, "input": state["input"]}
+        reward = _combine_reward(
+            reflection.normalized_score,
+            1.0,
+            spec.self_consistency_weight,
+        )
+        root = Node(
+            output_messages,
+            reflection=reflection,
+            action_signature=action_signature,
+            reward_override=reward,
+        )
+        return {"root": root, "input": state["input"], "iterations": 1}
 
     def generate_candidates(messages: ChatPromptValue, config: RunnableConfig):
         batch_size = config.get("configurable", {}).get(
             "N", spec.candidate_batch_size
         )
-        bound_llm = spec.llm.bind_tools(tools=list(spec.tools))
+        bound_llm = spec.llm.bind_tools(
+            tools=list(spec.tools), temperature=spec.temperature
+        )
         candidates = []
         for index in range(batch_size):
             response = bound_llm.invoke(
@@ -285,7 +312,10 @@ def build_agent_graph(spec: LATSAgentSpec):
         current = node
         while current.children:
             current = max(
-                current.children, key=lambda child: child.upper_confidence_bound()
+                current.children,
+                key=lambda child: child.upper_confidence_bound(
+                    exploration_weight=spec.exploration_weight
+                ),
             )
         return current
 
@@ -324,6 +354,13 @@ def build_agent_graph(spec: LATSAgentSpec):
         for index, candidate in enumerate(new_candidates):
             candidate_messages.append([candidate] + collected_responses[index])
 
+        signatures: List[str] = [
+            _extract_action_signature(messages[0])
+            for messages in candidate_messages
+        ]
+        signature_counts = Counter(signatures)
+        batch_size = len(candidate_messages)
+
         reflections = []
         for messages in candidate_messages:
             try:
@@ -341,11 +378,29 @@ def build_agent_graph(spec: LATSAgentSpec):
                     )
                 )
 
-        children = [
-            Node(messages, parent=best_candidate, reflection=reflection)
-            for messages, reflection in zip(candidate_messages, reflections)
-        ]
+        children: List[Node] = []
+        for messages, reflection, signature in zip(
+            candidate_messages, reflections, signatures
+        ):
+            consistency = (
+                signature_counts[signature] / batch_size if batch_size else 0.0
+            )
+            reward = _combine_reward(
+                reflection.normalized_score,
+                consistency,
+                spec.self_consistency_weight,
+            )
+            child = Node(
+                messages,
+                parent=best_candidate,
+                reflection=reflection,
+                action_signature=signature,
+                reward_override=reward,
+            )
+            children.append(child)
+
         best_candidate.children.extend(children)
+        state["iterations"] += 1
         return state
 
     def should_continue(state: TreeState):
@@ -353,6 +408,8 @@ def build_agent_graph(spec: LATSAgentSpec):
         if root.is_solved:
             return END
         if root.height > spec.max_height:
+            return END
+        if state.get("iterations", 0) >= spec.max_iterations:
             return END
         return "expand"
 
@@ -363,6 +420,34 @@ def build_agent_graph(spec: LATSAgentSpec):
     builder.add_conditional_edges("start", should_continue, ["expand", END])
     builder.add_conditional_edges("expand", should_continue, ["expand", END])
     return builder.compile()
+
+
+def _extract_action_signature(ai_message: BaseMessage) -> str:
+    """Identify the action signature for self-consistency calculations."""
+    if isinstance(ai_message, AIMessage):
+        tool_calls = getattr(ai_message, "tool_calls", None)
+        if tool_calls:
+            serialized_calls = []
+            for call in tool_calls:
+                name = call.get("name", "")
+                try:
+                    args = json.dumps(call.get("args", {}), sort_keys=True)
+                except (TypeError, ValueError):
+                    args = str(call.get("args", {}))
+                serialized_calls.append(f"{name}:{args}")
+            return "|".join(serialized_calls)
+        content = getattr(ai_message, "content", "")
+        if isinstance(content, str):
+            return content.strip()[:2000]
+    return repr(ai_message)[:2000]
+
+
+def _combine_reward(
+    reflection_score: float, consistency: float, weight: float
+) -> float:
+    """Blend reflection score with self-consistency weighting."""
+    weight = max(0.0, min(1.0, weight))
+    return weight * reflection_score + (1 - weight) * consistency
 
 
 __all__ = ["Reflection", "Node", "TreeState", "LATSAgentSpec", "build_agent_graph"]

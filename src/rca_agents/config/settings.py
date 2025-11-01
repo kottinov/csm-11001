@@ -38,6 +38,17 @@ def _parse_int(name: str, default: int) -> int:
         raise ValueError(f"Environment variable {name} must be an integer, got: {raw_value}") from exc
 
 
+def _parse_float(name: str, default: float) -> float:
+    """Parse a float environment variable with validation."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be a float, got: {raw_value}") from exc
+
+
 @dataclass(frozen=True)
 class AnthropicConfig:
     api_key: str
@@ -50,7 +61,12 @@ class AnthropicConfig:
 class RuntimeConfig:
     log_agent_max_depth: int
     metrics_agent_max_depth: int
+    log_agent_max_iterations: int
+    metrics_agent_max_iterations: int
     candidate_batch_size: int
+    search_temperature: float
+    exploration_weight: float
+    self_consistency_weight: float
 
 
 @dataclass(frozen=True)
@@ -79,14 +95,19 @@ def get_settings(env_file: Optional[Path] = None) -> Settings:
             "ANTHROPIC_API_KEY is not set. Provide it via the environment or an .env file."
         )
 
-    log_model = os.getenv("RCA_LOG_MODEL", "claude-sonnet-4-5-20250929")
+    log_model = os.getenv("RCA_LOG_MODEL", "claude-3-5-sonnet-20240620")
     metrics_model = os.getenv("RCA_METRICS_MODEL", log_model)
     supervisor_model = os.getenv("RCA_SUPERVISOR_MODEL", log_model)
 
     runtime = RuntimeConfig(
         log_agent_max_depth=_parse_int("RCA_LOG_AGENT_MAX_DEPTH", 5),
         metrics_agent_max_depth=_parse_int("RCA_METRICS_AGENT_MAX_DEPTH", 3),
+        log_agent_max_iterations=_parse_int("RCA_LOG_AGENT_MAX_ITERATIONS", 50),
+        metrics_agent_max_iterations=_parse_int("RCA_METRICS_AGENT_MAX_ITERATIONS", 40),
         candidate_batch_size=_parse_int("RCA_CANDIDATE_BATCH_SIZE", 5),
+        search_temperature=_parse_float("RCA_SEARCH_TEMPERATURE", 0.7),
+        exploration_weight=_parse_float("RCA_EXPLORATION_WEIGHT", 1.0),
+        self_consistency_weight=_parse_float("RCA_SELF_CONSISTENCY_WEIGHT", 0.5),
     )
 
     dataset = DatasetConfig(

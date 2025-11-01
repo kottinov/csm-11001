@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -78,9 +79,11 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     graph = build_graph(settings)
 
     if args.no_stream:
-        print(run_metrics_agent(question, graph))
-    else:
-        _stream_steps(graph, question)
+        result = run_metrics_agent(question, graph)
+        print(json.dumps(result.to_dict(), indent=2))
+        return
+
+    _stream_steps(graph, question)
 
 
 __all__ = ["main"]

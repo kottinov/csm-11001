@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from concurrent.futures import ThreadPoolExecutor
+import json
 from typing import Optional
 
 from langchain_anthropic import ChatAnthropic
@@ -35,19 +37,24 @@ def run_log_agent_isolated(
     query: str,
     timeout: int = 1800,
     settings: Optional[Settings] = None,
-) -> str:
+) -> AgentResult:
     """Execute the log agent in a subprocess and return its summary."""
     cli_args = ["--no-stream", "--question", query]
     if settings:
         cli_args.extend(["--logs-root", str(settings.dataset.logs_root)])
-    return _run_agent_module("rca_agents.cli.log_agent", cli_args, timeout)
+    raw_output = _run_agent_module("rca_agents.cli.log_agent", cli_args, timeout)
+    try:
+        payload = json.loads(raw_output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse log agent output as JSON: {exc}") from exc
+    return AgentResult(**payload)
 
 
 def run_metrics_agent_isolated(
     query: str,
     timeout: int = 1800,
     settings: Optional[Settings] = None,
-) -> str:
+) -> AgentResult:
     """Execute the metrics agent in a subprocess and return its summary."""
     cli_args = ["--no-stream", "--question", query]
     if settings:
@@ -59,7 +66,12 @@ def run_metrics_agent_isolated(
                 str(settings.dataset.metrics_chart_dir),
             ]
         )
-    return _run_agent_module("rca_agents.cli.metrics_agent", cli_args, timeout)
+    raw_output = _run_agent_module("rca_agents.cli.metrics_agent", cli_args, timeout)
+    try:
+        payload = json.loads(raw_output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse metrics agent output as JSON: {exc}") from exc
+    return AgentResult(**payload)
 
 
 def synthesize_findings(
@@ -114,32 +126,23 @@ def run_supervisor_flow(
         or "Perform a comprehensive Root Cause Analysis using both log and metrics perspectives."
     )
 
-    log_output = run_log_agent_isolated(resolved_log_query, settings=settings)
-    metrics_output = run_metrics_agent_isolated(resolved_metrics_query, settings=settings)
+    agent_timeout = 1800
 
-    try:
-        log_result = AgentResult(**eval(log_output.replace("AgentResult(", "dict(").replace(")", ")")))
-    except:
-        log_result = AgentResult(
-            agent_name="log_agent",
-            summary=log_output,
-            confidence=0.7,
-            evidence=[],
-            reflections="",
-            needs_collaboration=False
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_log = executor.submit(
+            run_log_agent_isolated,
+            resolved_log_query,
+            agent_timeout,
+            settings,
         )
-
-    try:
-        metrics_result = AgentResult(**eval(metrics_output.replace("AgentResult(", "dict(").replace(")", ")")))
-    except:
-        metrics_result = AgentResult(
-            agent_name="metrics_agent",
-            summary=metrics_output,
-            confidence=0.7,
-            evidence=[],
-            reflections="",
-            needs_collaboration=False
+        future_metrics = executor.submit(
+            run_metrics_agent_isolated,
+            resolved_metrics_query,
+            agent_timeout,
+            settings,
         )
+        log_result = future_log.result()
+        metrics_result = future_metrics.result()
 
     synthesis = synthesize_findings(
         log_result.summary,
